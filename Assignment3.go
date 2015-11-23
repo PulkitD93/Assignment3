@@ -7,10 +7,8 @@ import (
   "net/http"
   "os"
   "strconv"
-  
+  "bytes"
   )
-  
-
 type UberPriceResponse struct {
    Prices []struct {
        CurrencyCode         string  `json:"currency_code"`
@@ -135,7 +133,6 @@ func addTrip(tripRes TripResponse){
 func putTrip(rw http.ResponseWriter, req *http.Request, p httprouter.Params){
   id := p.ByName("tripId")
   tripId, _ := strconv.Atoi(id)
-  
   getRes:= TripResponse{}
   getRes = getTripDb(tripId)
   putRes:= TripPutResponse{}
@@ -145,11 +142,56 @@ func putTrip(rw http.ResponseWriter, req *http.Request, p httprouter.Params){
   putRes.TotalDistance = getRes.TotalDistance
   putRes.TotalUberDuration = getRes.TotalUberDuration
   putRes.TotalUberCosts = getRes.TotalUberCosts
-
-  putRes.UberWaitTimeEta = 10
+  cur:= putRes.StartingFromLocationID
+  next:=0
+  product_id:=""
   bestRoute := getRes.BestRouteLocationIds
+  x:=len(bestRoute)
+
+  
+  
+  if countUber>= x+1{
+    putRes.Status="finished"
+    putRes.NextDestinationLocationID = putRes.StartingFromLocationID
+
+
+  }else if countUber==x{
+    putRes.NextDestinationLocationID = putRes.StartingFromLocationID
+    putRes.Status="requesting"
+    next = putRes.NextDestinationLocationID
+    cur = bestRoute[x-1]
+    countUber++
+
+
+
+  }else{
+    putRes.Status="requesting"
+    if countUber!=0{
+      cur = bestRoute[countUber-1]
+    }
+
   putRes.NextDestinationLocationID =  bestRoute[countUber]
+  next = putRes.NextDestinationLocationID
   countUber++
+
+}
+if next!=0{
+  result:= UberPriceResponse{}
+  url:= getUrl(cur, next)
+  response, err:= http.Get(url) 
+  if err != nil {
+    fmt.Println("Error while computing the route", err.Error())
+    os.Exit(1)
+  
+  }
+
+json.NewDecoder(response.Body).Decode(&result)
+product_id = result.Prices[0].ProductID
+fmt.Println(product_id)
+ } 
+
+  putRes.UberWaitTimeEta =getWait(cur,next, product_id)
+
 
   resJson, _ := json.Marshal(putRes)
   rw.Header().Set("Content-Type", "application/json")
@@ -157,7 +199,40 @@ func putTrip(rw http.ResponseWriter, req *http.Request, p httprouter.Params){
 
 }
 
+func getWait(curLoc int, nextLoc int, productId string) (int){
+curLocLat, curLocLng:=getLatLng(curLoc)
+nextLocLat, nextLocLng :=getLatLng(nextLoc)
+url:= "https://sandbox-api.uber.com/v1/requests"
+uberAuthorizationToken:="eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzY29wZXMiOlsicmVxdWVzdCJdLCJzdWIiOiJhYzdiZWJmMS02YzhlLTQyOTgtOGJlNy1iYWE3YzdhODRhNjciLCJpc3MiOiJ1YmVyLXVzMSIsImp0aSI6IjE2YjMzOWI3LWVlYWYtNDU0YS1iNTVhLWI5YjI1MWQ1YmU3NCIsImV4cCI6MTQ1MDc0MjcyNywiaWF0IjoxNDQ4MTUwNzI2LCJ1YWN0IjoidnlKSU1pY1VIQ2wwWVdvUkFBbVBZWmNYV0s4b2JUIiwibmJmIjoxNDQ4MTUwNjM2LCJhdWQiOiI2R282ZUxhZC1Kby1hQkI0WDhuWUJtaTJ5ckcwdFJ6TSJ9.Wr0zJQKBvxo-sZSx-L24PjSJfCNG0upAWdYmSqx7hw9e3oqK_sCu11CzzAd0jhZ_8mM1jE5bZ9fuo52f4Mi9D_lVQpUbGEVmaTTnE8jG741PCmq-MEiajFUJrQDn-EFFTJRvyU0Fv6m3dgylRVmoCmP3EMhIHINotMKlRAksjg-JWpIGLErM9ess2r9GsQVdL0uE3-jnOXcDC8PKZMAwugUQ6P6Jk2tme0kirQuIkE6mlZnnJVSBldiG2k4zSScmtPDUrmU1LOJA1Lnh1VIFZJtYj5Ke7BB54KYjKhRTHiEcqBhG22QdXymTkrzvSFxccS8NTH_QbevEB1uH9rbr-w"
+urrreq:= UberRideRequestRequest{}
+urrreq.ProductID= productId
+urrreq.StartLatitude=curLocLat
+urrreq.EndLatitude=nextLocLat
+urrreq.StartLongitude=curLocLng
+urrreq.EndLongitude=nextLocLng
+jsonInputData, _ := json.Marshal(urrreq)
+fmt.Println("Req sent",urrreq)
+result:=UberRideResponse{}
 
+response, _ := http.NewRequest("POST", url, bytes.NewBuffer(jsonInputData))
+response.Header.Set("Content-Type", "application/json")
+response.Header.Set("Authorization", "Bearer "+uberAuthorizationToken)
+
+  client := &http.Client{}
+  resp, err := client.Do(response)
+
+  if err != nil {
+    fmt.Println("Error while getting response from uber ride request api", err.Error())
+    panic(err)
+  }
+
+  defer resp.Body.Close()
+json.NewDecoder(resp.Body).Decode(&result)
+fmt.Println(result)
+
+waitTime:= result.Eta
+return waitTime
+  }
 func getTrip(rw http.ResponseWriter, req *http.Request, p httprouter.Params){
   id := p.ByName("tripId")
   tripId, _ := strconv.Atoi(id)
@@ -167,11 +242,7 @@ func getTrip(rw http.ResponseWriter, req *http.Request, p httprouter.Params){
   resJson, _ := json.Marshal(getRes)
   rw.Header().Set("Content-Type", "application/json")
   fmt.Fprintf(rw, "%s", resJson)
-
-
-
 }
-
 
 func getTripDb(tripId int) TripResponse{
 
@@ -194,8 +265,6 @@ session, err1 := mgo.Dial(getTripDatabaseURL())
   } else {
     fmt.Println("Trip Data retrieved from trip DB")
   }
-
-  
   session.Close()
 return getTripRes
 }
@@ -211,7 +280,7 @@ func getBestRoute(startLoc int, locIds []int) ([]int, float64, int, float64){//R
   for j,i:= range allComb {
     fmt.Println("j=",j)
       fmt.Println("Print all Permu",i)          //iterated over all possible combinations
-    cost, dur, dist := getUberCostTimeDis(startLoc, i)   //call goes to this function for every combo//Giving 0
+    cost, dur, dist := getUberCostTimeDis(startLoc, i)   //call goes to this function for every combo
     fmt.Println("Current Cost", cost)
     if j ==0 {
       finalCost = cost
@@ -225,9 +294,6 @@ func getBestRoute(startLoc int, locIds []int) ([]int, float64, int, float64){//R
       fmt.Println("Final Cost for now is", finalCost)
     }
   }
-
-
-
 return bestRoute , finalCost, finalDur, finalDis
 }
 
